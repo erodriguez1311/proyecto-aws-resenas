@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema completo de reseñas (Frontend S3 + API + IA + Email).
+Description: Sistema de reseñas con S3, API, IA y Alertas.
 
 Resources:
-  # 1. EL BUCKET PARA LA WEB (FRONTEND)
+  # 1. BUCKET PARA LA WEB
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -11,7 +11,6 @@ Resources:
       WebsiteConfiguration:
         IndexDocument: index.html
 
-  # Política para que el bucket sea público y se vea la web
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -24,7 +23,7 @@ Resources:
             Action: "s3:GetObject"
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
 
-  # 2. CAPA DE MENSAJERÍA (DESACOPLAMIENTO)
+  # 2. MENSAJERÍA Y ALERTAS
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -38,7 +37,6 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 3. CAPA DE ALERTAS (EMAIL)
   AdminAlertTopic:
     Type: AWS::SNS::Topic
 
@@ -49,18 +47,36 @@ Resources:
       Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
-  # 4. CAPA DE ENTRADA (API + PRODUCER)
+  # 3. API GATEWAY
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
       Cors: "'*'"
 
+  # 4. LAMBDA PRODUCTORA
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
+      InlineCode: |
+        import json, boto3, os
+        sns = boto3.client('sns')
+        def lambda_handler(event, context):
+            try:
+                body = json.loads(event['body'])
+                sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+                return {
+                    'statusCode': 200,
+                    'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
+                    'body': json.dumps({'msg': 'Recibido'})
+                }
+            except Exception as e:
+                return {'statusCode': 500, 'body': str(e)}
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref MainTopic
       Policies:
         - SNSPublishMessagePolicy:
             TopicName: !GetAtt MainTopic.TopicName
@@ -71,28 +87,27 @@ Resources:
             Path: /send
             Method: post
             RestApiId: !Ref MyApi
-      Environment:
-        Variables:
-          TOPIC_ARN: !Ref MainTopic
-      Code:
-        ZipFile: |
-          import json, boto3, os
-          sns = boto3.client('sns')
-          def lambda_handler(event, context):
-              body = json.loads(event['body'])
-              sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
-              return {
-                  'statusCode': 200,
-                  'headers': {'Access-Control-Allow-Origin': '*'},
-                  'body': json.dumps({'msg': 'Recibido'})
-              }
 
-  # 5. CAPA DE PROCESAMIENTO E IA (CONSUMER)
+  # 5. LAMBDA PROCESADORA (IA)
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
+      InlineCode: |
+        import json, boto3, os
+        comprehend = boto3.client('comprehend')
+        sns = boto3.client('sns')
+        def lambda_handler(event, context):
+            alerta_arn = os.environ['ALERTA_TOPIC_ARN']
+            for record in event['Records']:
+                sqs_body = json.loads(record['body'])
+                sns_msg = json.loads(sqs_body['Message'])
+                text = sns_msg.get('text', 'Sin texto')
+                res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
+                if res['Sentiment'] == 'NEGATIVE':
+                    sns.publish(TopicArn=alerta_arn, Message=f"Reseña negativa: {text}", Subject="Alerta")
+            return {'status': 'done'}
       Environment:
         Variables:
           ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
@@ -106,23 +121,8 @@ Resources:
           Properties:
             Queue: !GetAtt ProcessingQueue.Arn
             BatchSize: 10
-      Code:
-        ZipFile: |
-          import json, boto3, os
-          comprehend = boto3.client('comprehend')
-          sns = boto3.client('sns')
-          def lambda_handler(event, context):
-              alerta_arn = os.environ['ALERTA_TOPIC_ARN']
-              for record in event['Records']:
-                  body = json.loads(record['body'])
-                  msg = json.loads(body['Message'])
-                  text = msg.get('text', 'Sin texto')
-                  res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                  if res['Sentiment'] == 'NEGATIVE':
-                      sns.publish(TopicArn=alerta_arn, Message=f"Reseña negativa: {text}", Subject="Alerta Negativa")
-              return {'status': 'done'}
 
-  # PERMISO SQS
+  # PERMISOS SQS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
@@ -142,5 +142,5 @@ Outputs:
     Description: "URL para el index.html"
     Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
   WebsiteURL:
-    Description: "URL de tu página web de reseñas"
+    Description: "URL de tu web"
     Value: !GetAtt FrontendBucket.WebsiteURL
