@@ -116,34 +116,4 @@ Resources:
       Runtime: python3.9
       InlineCode: |
         import json, boto3, os
-        comprehend = boto3.client('comprehend')
-        sns = boto3.client('sns')
-        def lambda_handler(event, context):
-            alerta_arn = os.environ['ALERTA_TOPIC_ARN']
-            for record in event['Records']:
-                sqs_body = json.loads(record['body'])
-                sns_msg = json.loads(sqs_body['Message'])
-                text = sns_msg.get('text', 'Sin texto')
-                res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                if res['Sentiment'] == 'NEGATIVE':
-                    sns.publish(
-                        TopicArn=alerta_arn, 
-                        Message=f"Alerta: Reseña negativa detectada: {text}", 
-                        Subject="Nueva Reseña Negativa"
-                    )
-            return {'status': 'done'}
-      Environment:
-        Variables:
-          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
-      Policies:
-        - ComprehendBasicAccessPolicy: {}
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt AdminAlertTopic.TopicName
-      Events:
-        MySQSEvent:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt ProcessingQueue.Arn
-            BatchSize: 10
-
-  #
+        comprehend
