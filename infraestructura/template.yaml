@@ -1,12 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de reseñas con S3 (Políticas modernas), API, IA y Alertas.
+Description: Sistema de reseñas - Versión Final con S3 Moderno.
 
 Resources:
-  # 1. BUCKET PARA LA WEB (CORREGIDO PARA NUEVAS POLÍTICAS DE AWS)
+  # 1. BUCKET PARA LA WEB (CONFIGURACIÓN MODERNA SIN ACLs)
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
