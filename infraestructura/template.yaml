@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema completo de reseñas con Frontend, API y Análisis de IA.
+Description: Sistema completo de reseñas desacoplado con alerta por email.
 
 Resources:
-  # --- CAPA DE MENSAJERÍA (Lo que ya tenías) ---
+  # 1. CAPA DE MENSAJERÍA (DESACOPLAMIENTO)
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -17,12 +17,12 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # --- CAPA DE ENTRADA (API + LAMBDA PRODUCER) ---
+  # 2. CAPA DE ENTRADA (API + PRODUCER)
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      Cors: "'*'" # Para que el navegador permita la conexión
+      Cors: "'*'"
 
   ProducerFunction:
     Type: AWS::Serverless::Function
@@ -47,62 +47,65 @@ Resources:
           import json, boto3, os
           sns = boto3.client('sns')
           def lambda_handler(event, context):
-              try:
-                  body = json.loads(event['body'])
-                  sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
-                  return {
-                      'statusCode': 200,
-                      'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
-                      'body': json.dumps({'msg': 'Reseña enviada a la cola'})
-                  }
-              except Exception as e:
-                  return {'statusCode': 500, 'body': str(e)}
+              body = json.loads(event['body'])
+              sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+              return {
+                  'statusCode': 200,
+                  'headers': {'Access-Control-Allow-Origin': '*'},
+                  'body': json.dumps({'msg': 'Recibido'})
+              }
 
-  # --- CAPA DE PROCESAMIENTO (Lambda Consumer) ---
+  # 3. CAPA DE PROCESAMIENTO E IA (CONSUMER)
   ProcessorFunction:
-    Type: AWS::Lambda::Function
+    Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
-      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
+      Policies:
+        - ComprehendBasicAccessPolicy: {}
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AdminAlertTopic.TopicName
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ProcessingQueue.Arn
+            BatchSize: 10
       Code:
         ZipFile: |
-          import json, boto3
+          import json, boto3, os
           comprehend = boto3.client('comprehend')
+          sns = boto3.client('sns')
           def lambda_handler(event, context):
               for record in event['Records']:
                   body = json.loads(record['body'])
                   msg = json.loads(body['Message'])
-                  text = msg['text']
+                  text = msg.get('text', '')
                   res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                  print(f"ANÁLISIS -> Texto: {text} | Sentimiento: {res['Sentiment']}")
-              return {'status': 'done'}
+                  sentiment = res['Sentiment']
+                  print(f"Texto: {text} | Sentimiento: {sentiment}")
+                  if sentiment == 'NEGATIVE':
+                      sns.publish(
+                          TopicArn=os.environ['ALERTA_TOPIC_ARN'],
+                          Message=f"Alerta: Reseña negativa recibida: {text}",
+                          Subject="Nueva Reseña Negativa"
+                      )
 
-  SqsEventSource:
-    Type: AWS::Lambda::EventSourceMapping
+  # 4. CAPA DE ALERTAS (ADMINISTRADOR)
+  AdminAlertTopic:
+    Type: AWS::SNS::Topic
+
+  AdminEmailSubscription:
+    Type: AWS::SNS::Subscription
     Properties:
-      BatchSize: 10
-      EventSourceArn: !GetAtt ProcessingQueue.Arn
-      FunctionName: !Ref ProcessorFunction
+      TopicArn: !Ref AdminAlertTopic
+      Endpoint: "edu.rm1992@gmail.com" 
+      Protocol: email
 
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal: {Service: [lambda.amazonaws.com]}
-            Action: ['sts:AssumeRole']
-      Policies:
-        - PolicyName: ProcessorPermissions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'comprehend:DetectSentiment', 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
-                Resource: '*'
-
+  # PERMISO PARA QUE SQS ACEPTE MENSAJES DE SNS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
@@ -119,5 +122,5 @@ Resources:
 
 Outputs:
   ApiUrl:
-    Description: "URL de la API para el index.html"
+    Description: "Copia esta URL en tu index.html"
     Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
