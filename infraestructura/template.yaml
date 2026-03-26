@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de reseñas final con CORS corregido, IA y Alertas S3.
+Description: Sistema de reseñas - VERSION FINAL SIN ERRORES SINTAXIS
 
 Resources:
-  # 1. BUCKET PARA LA WEB (CONFIGURACIÓN MODERNA)
+  # 1. BUCKET PARA LA WEB
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -21,16 +21,18 @@ Resources:
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref FrontendBucket
+      Bucket: 
+        Ref: FrontendBucket
       PolicyDocument:
         Statement:
           - Sid: PublicReadForGetBucketObjects
             Effect: Allow
             Principal: "*"
             Action: "s3:GetObject"
-            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Resource: 
+              Fn::Sub: "arn:aws:s3:::${FrontendBucket}/*"
 
-  # 2. CAPA DE MENSAJERÍA (DESACOPLAMIENTO)
+  # 2. CAPA DE MENSAJERÍA
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -40,8 +42,10 @@ Resources:
   QueueSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: !Ref MainTopic
-      Endpoint: !GetAtt ProcessingQueue.Arn
+      TopicArn: 
+        Ref: MainTopic
+      Endpoint: 
+        Fn::GetAtt: [ProcessingQueue, Arn]
       Protocol: sqs
 
   # 3. CAPA DE ALERTAS (EMAIL)
@@ -51,11 +55,12 @@ Resources:
   AdminEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: !Ref AdminAlertTopic
+      TopicArn: 
+        Ref: AdminAlertTopic
       Endpoint: "TU-EMAIL@AQUI.COM" # <--- CAMBIA ESTO POR TU EMAIL
       Protocol: email
 
-  # 4. API GATEWAY CON CORS EXPLÍCITO
+  # 4. API GATEWAY
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -86,7 +91,7 @@ Resources:
                         'Access-Control-Allow-Methods': 'POST,OPTIONS',
                         'Content-Type': 'application/json'
                     },
-                    'body': json.dumps({'msg': 'Reseña recibida'})
+                    'body': json.dumps({'msg': 'Recibido'})
                 }
             except Exception as e:
                 return {
@@ -96,17 +101,20 @@ Resources:
                 }
       Environment:
         Variables:
-          TOPIC_ARN: !Ref MainTopic
+          TOPIC_ARN: 
+            Ref: MainTopic
       Policies:
         - SNSPublishMessagePolicy:
-            TopicName: !GetAtt MainTopic.TopicName
+            TopicName: 
+              Fn::GetAtt: [MainTopic, TopicName]
       Events:
         PostReview:
           Type: Api
           Properties:
             Path: /send
             Method: post
-            RestApiId: !Ref MyApi
+            RestApiId: 
+              Ref: MyApi
 
   # 6. LAMBDA PROCESADORA (IA + ALERTA)
   ProcessorFunction:
@@ -134,37 +142,43 @@ Resources:
             return {'status': 'done'}
       Environment:
         Variables:
-          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
+          ALERTA_TOPIC_ARN: 
+            Ref: AdminAlertTopic
       Policies:
         - ComprehendBasicAccessPolicy: {}
         - SNSPublishMessagePolicy:
-            TopicName: !GetAtt AdminAlertTopic.TopicName
+            TopicName: 
+              Fn::GetAtt: [AdminAlertTopic, TopicName]
       Events:
         MySQSEvent:
           Type: SQS
           Properties:
-            Queue: !GetAtt ProcessingQueue.Arn
+            Queue: 
+              Fn::GetAtt: [ProcessingQueue, Arn]
             BatchSize: 10
 
   # PERMISO SQS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
-      Queues: [ !Ref ProcessingQueue ]
+      Queues: 
+        - Ref: ProcessingQueue
       PolicyDocument:
         Statement:
           - Effect: Allow
             Principal: "*"
             Action: "sqs:SendMessage"
-            Resource: !GetAtt ProcessingQueue.Arn
+            Resource: 
+              Fn::GetAtt: [ProcessingQueue, Arn]
             Condition:
               ArnEquals:
-                aws:SourceArn: !Ref MainTopic
+                aws:SourceArn: 
+                  Ref: MainTopic
 
 Outputs:
   ApiUrl:
-    Description: "URL para el index.html"
-    Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
+    Value: 
+      Fn::Sub: "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
   WebsiteURL:
-    Description: "URL de tu página web"
-    Value: !GetAtt FrontendBucket.WebsiteURL
+    Value: 
+      Fn::GetAtt: [FrontendBucket, WebsiteURL]
