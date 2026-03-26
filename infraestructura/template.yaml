@@ -1,13 +1,17 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de reseñas con S3, API, IA y Alertas.
+Description: Sistema de reseñas con S3 (Políticas modernas), API, IA y Alertas.
 
 Resources:
-  # 1. BUCKET PARA LA WEB
+  # 1. BUCKET PARA LA WEB (CORREGIDO PARA NUEVAS POLÍTICAS DE AWS)
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      AccessControl: PublicRead
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
       WebsiteConfiguration:
         IndexDocument: index.html
 
@@ -106,7 +110,7 @@ Resources:
                 text = sns_msg.get('text', 'Sin texto')
                 res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
                 if res['Sentiment'] == 'NEGATIVE':
-                    sns.publish(TopicArn=alerta_arn, Message=f"Reseña negativa: {text}", Subject="Alerta")
+                    sns.publish(TopicArn=alerta_arn, Message=f"Reseña negativa detectada: {text}", Subject="Alerta Negativa")
             return {'status': 'done'}
       Environment:
         Variables:
