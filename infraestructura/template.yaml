@@ -1,17 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de reseñas desacoplado con Análisis de Sentimiento.
+Description: Sistema completo de reseñas con Frontend, API y Análisis de IA.
 
 Resources:
-  # 1. El "buzón" de entrada (SNS)
+  # --- CAPA DE MENSAJERÍA (Lo que ya tenías) ---
   MainTopic:
     Type: AWS::SNS::Topic
 
-  # 2. La cola que espera (SQS) - Esto cumple el requisito de "Desacoplado"
   ProcessingQueue:
     Type: AWS::SQS::Queue
 
-  # Unimos SNS con SQS
   QueueSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -19,7 +17,48 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 3. La Lambda que procesa (El cerebro)
+  # --- CAPA DE ENTRADA (API + LAMBDA PRODUCER) ---
+  MyApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors: "'*'" # Para que el navegador permita la conexión
+
+  ProducerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt MainTopic.TopicName
+      Events:
+        PostReview:
+          Type: Api
+          Properties:
+            Path: /send
+            Method: post
+            RestApiId: !Ref MyApi
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref MainTopic
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          sns = boto3.client('sns')
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
+                      'body': json.dumps({'msg': 'Reseña enviada a la cola'})
+                  }
+              except Exception as e:
+                  return {'statusCode': 500, 'body': str(e)}
+
+  # --- CAPA DE PROCESAMIENTO (Lambda Consumer) ---
   ProcessorFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -36,10 +75,9 @@ Resources:
                   msg = json.loads(body['Message'])
                   text = msg['text']
                   res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                  print(f"Texto: {text} - Sentimiento: {res['Sentiment']}")
+                  print(f"ANÁLISIS -> Texto: {text} | Sentimiento: {res['Sentiment']}")
               return {'status': 'done'}
 
-  # 4. El disparador: SQS activa la Lambda
   SqsEventSource:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
@@ -47,7 +85,6 @@ Resources:
       EventSourceArn: !GetAtt ProcessingQueue.Arn
       FunctionName: !Ref ProcessorFunction
 
-  # 5. Permisos (IAM Role)
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -58,7 +95,7 @@ Resources:
             Principal: {Service: [lambda.amazonaws.com]}
             Action: ['sts:AssumeRole']
       Policies:
-        - PolicyName: LambdaPermissions
+        - PolicyName: ProcessorPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -66,7 +103,6 @@ Resources:
                 Action: ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'comprehend:DetectSentiment', 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
                 Resource: '*'
 
-  # Política para que SQS acepte mensajes de SNS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
@@ -80,3 +116,8 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !Ref MainTopic
+
+Outputs:
+  ApiUrl:
+    Description: "URL de la API para el index.html"
+    Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
