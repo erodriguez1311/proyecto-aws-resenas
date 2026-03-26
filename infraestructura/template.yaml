@@ -95,7 +95,7 @@ Resources:
             Method: post
             RestApiId: { Ref: MyApi }
 
-  # 6. LAMBDA 2: PROCESA CON IA Y MANDA ALERTA
+# 6. LAMBDA PROCESADORA (IA + ALERTA) - CORRECCIÓN DE REGIÓN
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -103,35 +103,47 @@ Resources:
       Runtime: python3.9
       InlineCode: |
         import json, boto3, os
-        comprehend = boto3.client('comprehend')
+        # FORZAMOS A COMPREHEND A USAR IRLANDA (eu-west-1) PORQUE EN ESTOCOLMO NO EXISTE
+        comprehend = boto3.client('comprehend', region_name='eu-west-1')
         sns = boto3.client('sns')
         def lambda_handler(event, context):
+            alerta_arn = os.environ['ALERTA_TOPIC_ARN']
             for record in event['Records']:
                 try:
                     sqs_body = json.loads(record['body'])
-                    # SNS mete el mensaje original en el campo 'Message'
-                    msg_content = json.loads(sqs_body['Message'])
-                    text = msg_content.get('text', '')
+                    sns_msg = json.loads(sqs_body['Message'])
+                    text = sns_msg.get('text', 'Sin texto')
                     
+                    # Analizamos sentimiento
                     res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                    if res['Sentiment'] == 'NEGATIVE':
+                    sentimiento = res['Sentiment']
+                    print(f"SENTIMIENTO: {sentimiento}")
+
+                    if sentimiento == 'NEGATIVE':
                         sns.publish(
-                            TopicArn=os.environ['ALERTA_ARN'],
-                            Message=f"Alerta Negativa: {text}",
-                            Subject="Feedback Crítico"
+                            TopicArn=alerta_arn,
+                            Message=f"Alerta: Reseña negativa detectada: {text}",
+                            Subject="Nueva Reseña Negativa"
                         )
-                except Exception as e: print(e)
+                except Exception as e:
+                    print(f"ERROR: {str(e)}")
+            return {'status': 'done'}
       Environment:
         Variables:
-          ALERTA_ARN: { Ref: AdminAlertTopic }
+          ALERTA_TOPIC_ARN: 
+            Ref: AdminAlertTopic
       Policies:
         - ComprehendBasicAccessPolicy: {}
-        - SNSFullAccess
+        - SNSPublishMessagePolicy:
+            TopicName: 
+              Fn::GetAtt: [AdminAlertTopic, TopicName]
       Events:
         MySQSEvent:
           Type: SQS
           Properties:
-            Queue: { Fn::GetAtt: [ProcessingQueue, Arn] }
+            Queue: 
+              Fn::GetAtt: [ProcessingQueue, Arn]
+            BatchSize: 10
 
   # PERMISOS PARA QUE SNS PUEDA ESCRIBIR EN SQS
   SqsQueuePolicy:
