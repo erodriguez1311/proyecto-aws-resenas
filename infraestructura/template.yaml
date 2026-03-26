@@ -57,7 +57,7 @@ Resources:
     Properties:
       TopicArn: 
         Ref: AdminAlertTopic
-      Endpoint: "TU-EMAIL@AQUI.COM" # <--- CAMBIA ESTO POR TU EMAIL
+      Endpoint: "edu.rm1992@gmail.com" # <--- CAMBIA ESTO POR TU EMAIL
       Protocol: email
 
   # 4. API GATEWAY
@@ -117,6 +117,7 @@ Resources:
               Ref: MyApi
 
   # 6. LAMBDA PROCESADORA (IA + ALERTA)
+  # 6. LAMBDA PROCESADORA (IA + ALERTA) - VERSION CON LOGS DETALLADOS
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -128,17 +129,30 @@ Resources:
         sns = boto3.client('sns')
         def lambda_handler(event, context):
             alerta_arn = os.environ['ALERTA_TOPIC_ARN']
+            print(f"RECIBIDO EVENTO: {json.dumps(event)}") # LOG PARA VER QUE LLEGA
+            
             for record in event['Records']:
-                sqs_body = json.loads(record['body'])
-                sns_msg = json.loads(sqs_body['Message'])
-                text = sns_msg.get('text', 'Sin texto')
-                res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                if res['Sentiment'] == 'NEGATIVE':
-                    sns.publish(
-                        TopicArn=alerta_arn, 
-                        Message=f"Alerta: Reseña negativa detectada: {text}", 
-                        Subject="Nueva Reseña Negativa"
-                    )
+                try:
+                    # SQS envuelve el mensaje de SNS, y SNS envuelve tu JSON
+                    sqs_body = json.loads(record['body'])
+                    sns_msg = json.loads(sqs_body['Message'])
+                    text = sns_msg.get('text', 'Sin texto')
+                    
+                    print(f"ANALIZANDO TEXTO: {text}")
+                    
+                    res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
+                    sentimiento = res['Sentiment']
+                    print(f"SENTIMIENTO DETECTADO: {sentimiento}")
+
+                    if sentimiento == 'NEGATIVE':
+                        print("DISPARANDO ALERTA SNS...")
+                        sns.publish(
+                            TopicArn=alerta_arn, 
+                            Message=f"Alerta: Reseña negativa detectada: {text}", 
+                            Subject="Nueva Reseña Negativa"
+                        )
+                except Exception as e:
+                    print(f"ERROR PROCESANDO RECORD: {str(e)}")
             return {'status': 'done'}
       Environment:
         Variables:
