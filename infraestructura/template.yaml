@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema completo de reseñas desacoplado con alerta por email.
+Description: Sistema de reseñas desacoplado con IA y Alerta por Email.
 
 Resources:
   # 1. CAPA DE MENSAJERÍA (DESACOPLAMIENTO)
@@ -17,7 +17,18 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 2. CAPA DE ENTRADA (API + PRODUCER)
+  # 2. CAPA DE ALERTAS (EL EMAIL QUE FALTABA)
+  AdminAlertTopic:
+    Type: AWS::SNS::Topic
+
+  AdminEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AdminAlertTopic
+      Endpoint: "edu.rm1992@gmail.com"
+      Protocol: email
+
+  # 3. CAPA DE ENTRADA (API + PRODUCER)
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -47,15 +58,18 @@ Resources:
           import json, boto3, os
           sns = boto3.client('sns')
           def lambda_handler(event, context):
-              body = json.loads(event['body'])
-              sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
-              return {
-                  'statusCode': 200,
-                  'headers': {'Access-Control-Allow-Origin': '*'},
-                  'body': json.dumps({'msg': 'Recibido'})
-              }
+              try:
+                  body = json.loads(event['body'])
+                  sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
+                      'body': json.dumps({'msg': 'Recibido'})
+                  }
+              except Exception as e:
+                  return {'statusCode': 500, 'body': str(e)}
 
-  # 3. CAPA DE PROCESAMIENTO E IA (CONSUMER)
+  # 4. CAPA DE PROCESAMIENTO E IA (CONSUMER)
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -63,7 +77,7 @@ Resources:
       Runtime: python3.9
       Environment:
         Variables:
-          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
+          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic # <--- Aquí conectamos con el email
       Policies:
         - ComprehendBasicAccessPolicy: {}
         - SNSPublishMessagePolicy:
@@ -80,30 +94,25 @@ Resources:
           comprehend = boto3.client('comprehend')
           sns = boto3.client('sns')
           def lambda_handler(event, context):
+              alerta_arn = os.environ['ALERTA_TOPIC_ARN']
               for record in event['Records']:
-                  body = json.loads(record['body'])
-                  msg = json.loads(body['Message'])
-                  text = msg.get('text', '')
+                  sqs_body = json.loads(record['body'])
+                  sns_msg = json.loads(sqs_body['Message'])
+                  text = sns_msg.get('text', 'Sin texto')
+                  
+                  # Análisis con IA
                   res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
                   sentiment = res['Sentiment']
-                  print(f"Texto: {text} | Sentimiento: {sentiment}")
+                  print(f"Resultado: {sentiment} para el texto: {text}")
+                  
+                  # Si es negativo, avisar al admin
                   if sentiment == 'NEGATIVE':
                       sns.publish(
-                          TopicArn=os.environ['ALERTA_TOPIC_ARN'],
-                          Message=f"Alerta: Reseña negativa recibida: {text}",
-                          Subject="Nueva Reseña Negativa"
+                          TopicArn=alerta_arn,
+                          Message=f"ALERTA: Reseña negativa detectada.\nTexto: {text}",
+                          Subject="Feedback Crítico Recibido"
                       )
-
-  # 4. CAPA DE ALERTAS (ADMINISTRADOR)
-  AdminAlertTopic:
-    Type: AWS::SNS::Topic
-
-  AdminEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref AdminAlertTopic
-      Endpoint: "edu.rm1992@gmail.com" 
-      Protocol: email
+              return {'status': 'done'}
 
   # PERMISO PARA QUE SQS ACEPTE MENSAJES DE SNS
   SqsPolicy:
@@ -122,5 +131,5 @@ Resources:
 
 Outputs:
   ApiUrl:
-    Description: "Copia esta URL en tu index.html"
+    Description: "URL para tu index.html"
     Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
