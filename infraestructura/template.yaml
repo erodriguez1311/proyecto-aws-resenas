@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de reseñas - Versión Final con S3 Moderno.
+Description: Sistema de reseñas desacoplado con IA y Alertas (Versión Final Corregida).
 
 Resources:
-  # 1. BUCKET PARA LA WEB (CONFIGURACIÓN MODERNA SIN ACLs)
+  # 1. BUCKET PARA LA WEB (CONFIGURACIÓN MODERNA)
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -30,7 +30,7 @@ Resources:
             Action: "s3:GetObject"
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
 
-  # 2. MENSAJERÍA Y ALERTAS
+  # 2. CAPA DE MENSAJERÍA Y DESACOPLAMIENTO
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -44,6 +44,7 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
+  # 3. CAPA DE ALERTAS (EMAIL AL ADMINISTRADOR)
   AdminAlertTopic:
     Type: AWS::SNS::Topic
 
@@ -51,17 +52,20 @@ Resources:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref AdminAlertTopic
-      Endpoint: "edu.rm1992@gmail.com"
+      Endpoint: "edu.rm1992@gmail.com" # <--- CAMBIA ESTO POR TU EMAIL
       Protocol: email
 
-  # 3. API GATEWAY
+  # 4. API GATEWAY (CON CORS CONFIGURADO)
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      Cors: "'*'"
+      Cors:
+        AllowMethods: "'POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
 
-  # 4. LAMBDA PRODUCTORA
+  # 5. LAMBDA PRODUCTORA (RECIBE DE LA WEB Y MANDA A SNS)
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -76,78 +80,5 @@ Resources:
                 sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
                 return {
                     'statusCode': 200,
-                    'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
-                    'body': json.dumps({'msg': 'Recibido'})
-                }
-            except Exception as e:
-                return {'statusCode': 500, 'body': str(e)}
-      Environment:
-        Variables:
-          TOPIC_ARN: !Ref MainTopic
-      Policies:
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt MainTopic.TopicName
-      Events:
-        PostReview:
-          Type: Api
-          Properties:
-            Path: /send
-            Method: post
-            RestApiId: !Ref MyApi
-
-  # 5. LAMBDA PROCESADORA (IA)
-  ProcessorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: index.lambda_handler
-      Runtime: python3.9
-      InlineCode: |
-        import json, boto3, os
-        comprehend = boto3.client('comprehend')
-        sns = boto3.client('sns')
-        def lambda_handler(event, context):
-            alerta_arn = os.environ['ALERTA_TOPIC_ARN']
-            for record in event['Records']:
-                sqs_body = json.loads(record['body'])
-                sns_msg = json.loads(sqs_body['Message'])
-                text = sns_msg.get('text', 'Sin texto')
-                res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                if res['Sentiment'] == 'NEGATIVE':
-                    sns.publish(TopicArn=alerta_arn, Message=f"Reseña negativa detectada: {text}", Subject="Alerta Negativa")
-            return {'status': 'done'}
-      Environment:
-        Variables:
-          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
-      Policies:
-        - ComprehendBasicAccessPolicy: {}
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt AdminAlertTopic.TopicName
-      Events:
-        MySQSEvent:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt ProcessingQueue.Arn
-            BatchSize: 10
-
-  # PERMISOS SQS
-  SqsPolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      Queues: [ !Ref ProcessingQueue ]
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal: "*"
-            Action: "sqs:SendMessage"
-            Resource: !GetAtt ProcessingQueue.Arn
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !Ref MainTopic
-
-Outputs:
-  ApiUrl:
-    Description: "URL para el index.html"
-    Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
-  WebsiteURL:
-    Description: "URL de tu web"
-    Value: !GetAtt FrontendBucket.WebsiteURL
+                    'headers': {
+                        'Access-Control-Allow
