@@ -178,16 +178,13 @@ Resources:
       Queues: 
         - Ref: ProcessingQueue
       PolicyDocument:
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal: "*"
             Action: "sqs:SendMessage"
             Resource: 
               Fn::GetAtt: [ProcessingQueue, Arn]
-            Condition:
-              ArnEquals:
-                aws:SourceArn: 
-                  Ref: MainTopic
 
 Outputs:
   ApiUrl:
