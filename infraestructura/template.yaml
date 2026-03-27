@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema Final Desacoplado - VERSION ESTANDAR SAM
+Description: Sistema de Feedback - VERSION FINAL GARANTIZADA
 
 Resources:
-  # 1. BUCKET PARA LA WEB
+  # 1. S3 BUCKET PARA WEB
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -24,7 +24,7 @@ Resources:
             Action: "s3:GetObject"
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
 
-  # 2. CAPA DE MENSAJERÍA
+  # 2. INFRAESTRUCTURA DE MENSAJERIA
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -38,18 +38,18 @@ Resources:
       Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 3. CAPA DE ALERTA (EMAIL)
+  # 3. ALERTA EMAIL
   AdminAlertTopic:
     Type: AWS::SNS::Topic
 
-  AdminEmailSubscription:
+  AdminEmailSub:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref AdminAlertTopic
       Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
- # 4. API CON CORS REFORZADO
+  # 4. API GATEWAY (Configuracion estandar SAM para CORS)
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -59,7 +59,7 @@ Resources:
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
         AllowOrigin: "'*'"
 
-  # 5. LAMBDA PRODUCTORA CON HEADERS RECUPERADOS
+  # 5. LAMBDA PRODUCTORA (CORS + PERMISOS)
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -69,24 +69,20 @@ Resources:
         import json, boto3, os
         sns = boto3.client('sns')
         def lambda_handler(event, context):
+            # Headers obligatorios para evitar error CORS en el navegador
+            headers = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'POST,OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            }
+            if event.get('httpMethod') == 'OPTIONS':
+                return {'statusCode': 200, 'headers': headers, 'body': ''}
             try:
                 body = json.loads(event['body'])
                 sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
-                return {
-                    'statusCode': 200,
-                    'headers': {
-                        'Access-Control-Allow-Origin': '*',
-                        'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                        'Access-Control-Allow-Headers': 'Content-Type'
-                    },
-                    'body': json.dumps({'msg': 'OK'})
-                }
+                return {'statusCode': 200, 'headers': headers, 'body': json.dumps({'msg': 'OK'})}
             except Exception as e:
-                return {
-                    'statusCode': 500,
-                    'headers': {'Access-Control-Allow-Origin': '*'},
-                    'body': str(e)
-                }
+                return {'statusCode': 500, 'headers': headers, 'body': str(e)}
       Environment:
         Variables:
           TOPIC_ARN: !Ref MainTopic
@@ -100,8 +96,9 @@ Resources:
             Path: /send
             Method: post
             RestApiId: !Ref MyApi
-  # 6. LAMBDA PROCESADORA
-  FinalProcessorFunction:
+
+  # 6. LAMBDA PROCESADORA (IA + ALERTA)
+  ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
@@ -125,7 +122,7 @@ Resources:
                             Message=f"Alerta: {text}",
                             Subject="Feedback Negativo"
                         )
-                except Exception as e: print(f"Error: {e}")
+                except Exception as e: print(e)
             return {'status': 'done'}
       Environment:
         Variables:
@@ -143,7 +140,7 @@ Resources:
             Queue: !GetAtt ProcessingQueue.Arn
             BatchSize: 1
 
-  # PERMISO SQS
+  # PERMISO DE SNS A SQS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
