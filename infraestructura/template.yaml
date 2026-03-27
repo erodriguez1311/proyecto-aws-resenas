@@ -46,7 +46,7 @@ Resources:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref AdminAlertTopic
-      Endpoint: "edu.rm1992@gmail.com"
+      Endpoint: "eduardo.rodriguez@alumni.immune.institute"
       Protocol: email
 
   # 4. API GATEWAY (Configuracion estandar SAM para CORS)
