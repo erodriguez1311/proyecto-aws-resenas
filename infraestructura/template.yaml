@@ -49,15 +49,27 @@ Resources:
       Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
-  # 4. API GATEWAY
+  # 4. API GATEWAY CON CORS FORZADO AL EXTREMO
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
       Cors:
         AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
         AllowOrigin: "'*'"
+        MaxAge: "'600'"
 
  # 5. LAMBDA PRODUCTORA (CON PERMISOS Y CORS SEGURO)
   ProducerFunction:
