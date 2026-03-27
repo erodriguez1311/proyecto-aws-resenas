@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema Final Desacoplado - VERSION LIMPIA
+Description: Sistema de Feedback Final - CORREGIDO SIN ERRORES IAM
 
 Resources:
-  # 1. BUCKET WEB
+  # 1. BUCKET PARA LA WEB
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -16,15 +16,15 @@ Resources:
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: { Ref: FrontendBucket }
+      Bucket: !Ref FrontendBucket
       PolicyDocument:
         Statement:
           - Effect: Allow
             Principal: "*"
             Action: "s3:GetObject"
-            Resource: { Fn::Sub: "arn:aws:s3:::${FrontendBucket}/*" }
+            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
 
-  # 2. MENSAJERÍA DESACOPLADA
+  # 2. CAPA DE MENSAJERÍA
   MainTopic:
     Type: AWS::SNS::Topic
 
@@ -34,32 +34,32 @@ Resources:
   QueueSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: { Ref: MainTopic }
-      Endpoint: { Fn::GetAtt: [ProcessingQueue, Arn] }
+      TopicArn: !Ref MainTopic
+      Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 3. ALERTAS EMAIL
+  # 3. CAPA DE ALERTA (EMAIL)
   AdminAlertTopic:
     Type: AWS::SNS::Topic
 
-  EmailSub:
+  AdminEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: { Ref: AdminAlertTopic }
+      TopicArn: !Ref AdminAlertTopic
       Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
-  # 4. API
+  # 4. API GATEWAY
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
       Cors:
         AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
         AllowOrigin: "'*'"
 
- # 5. LAMBDA PRODUCTORA
+  # 5. LAMBDA PRODUCTORA
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -81,72 +81,87 @@ Resources:
                 return {'statusCode': 500, 'body': str(e)}
       Environment:
         Variables:
-          TOPIC_ARN: { Ref: MainTopic }
+          TOPIC_ARN: !Ref MainTopic
       Policies:
-        - Arn: "arn:aws:iam::aws:policy/AmazonSNSFullAccess" # <--- ARN COMPLETO PARA EVITAR ERROR
+        - Statement:
+            - Effect: Allow
+              Action: "sns:Publish"
+              Resource: !Ref MainTopic
       Events:
         PostReview:
           Type: Api
           Properties:
             Path: /send
             Method: post
-            RestApiId: { Ref: MyApi }
+            RestApiId: !Ref MyApi
 
-  # 6. LAMBDA PROCESADORA
+  # 6. LAMBDA PROCESADORA (CON TIMEOUT Y REGION FORZADA)
   FinalProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
-      Timeout: 60
-      MemorySize: 512
+      Timeout: 30
+      MemorySize: 256
       InlineCode: |
         import json, boto3, os
         def lambda_handler(event, context):
+            # Forzamos Irlanda porque Estocolmo no tiene Comprehend
             ia = boto3.client('comprehend', region_name='eu-west-1')
             sns = boto3.client('sns', region_name='eu-north-1')
+            
             for record in event.get('Records', []):
                 try:
                     sqs_body = json.loads(record['body'])
                     msg_content = json.loads(sqs_body['Message'])
                     text = msg_content.get('text', 'Sin texto')
+                    
                     res = ia.detect_sentiment(Text=text, LanguageCode='es')
                     sentiment = res['Sentiment']
+                    
                     if sentiment == 'NEGATIVE' or 'horrible' in text.lower():
                         sns.publish(
                             TopicArn=os.environ['ALERTA_ARN'],
-                            Message=f"Reseña Crítica: {text}",
-                            Subject="Alerta de Feedback"
+                            Message=f"Alerta Critica: {text}",
+                            Subject="Feedback Negativo"
                         )
                 except Exception as e:
-                    print(f"ERROR: {str(e)}")
+                    print(f"Error: {str(e)}")
             return {'status': 'done'}
       Environment:
         Variables:
-          ALERTA_ARN: { Ref: AdminAlertTopic }
+          ALERTA_ARN: !Ref AdminAlertTopic
       Policies:
-        - Arn: "arn:aws:iam::aws:policy/ComprehendReadOnly" # <--- ARN COMPLETO
-        - Arn: "arn:aws:iam::aws:policy/AmazonSNSFullAccess" # <--- ARN COMPLETO
+        - Statement:
+            - Effect: Allow
+              Action: 
+                - "comprehend:DetectSentiment"
+                - "sns:Publish"
+                - "sqs:ReceiveMessage"
+                - "sqs:DeleteMessage"
+                - "sqs:GetQueueAttributes"
+              Resource: "*"
       Events:
         MySQSEvent:
           Type: SQS
           Properties:
-            Queue: { Fn::GetAtt: [ProcessingQueue, Arn] }
+            Queue: !GetAtt ProcessingQueue.Arn
+            BatchSize: 1
 
-  # PERMISO SQS
+  # PERMISO PARA QUE SNS ESCRIBA EN SQS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
-      Queues: [ { Ref: ProcessingQueue } ]
+      Queues: [ !Ref ProcessingQueue ]
       PolicyDocument:
         Statement:
           - Effect: Allow
             Principal: "*"
             Action: "sqs:SendMessage"
-            Resource: { Fn::GetAtt: [ProcessingQueue, Arn] }
+            Resource: !GetAtt ProcessingQueue.Arn
 
 Outputs:
   ApiUrl:
-    Value: { Fn::Sub: "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send" }
+    Value: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send"
   WebsiteURL:
-    Value: { Fn::GetAtt: [FrontendBucket, WebsiteURL] }
+    Value: !GetAtt FrontendBucket.WebsiteURL
