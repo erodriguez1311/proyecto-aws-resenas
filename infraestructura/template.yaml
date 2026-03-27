@@ -59,7 +59,7 @@ Resources:
         AllowHeaders: "'Content-Type'"
         AllowOrigin: "'*'"
 
-  # 5. LAMBDA PRODUCTORA
+ # 5. LAMBDA PRODUCTORA (CON PERMISOS Y CORS SEGURO)
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -72,13 +72,25 @@ Resources:
             try:
                 body = json.loads(event['body'])
                 sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+                
+                # HEADERS PARA QUE EL NAVEGADOR NO DE ERROR CORS
                 return {
                     'statusCode': 200,
-                    'headers': {'Access-Control-Allow-Origin': '*'},
+                    'headers': {
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'POST,OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    },
                     'body': json.dumps({'msg': 'OK'})
                 }
             except Exception as e:
-                return {'statusCode': 500, 'body': str(e)}
+                return {
+                    'statusCode': 500,
+                    'headers': {
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': str(e)
+                }
       Environment:
         Variables:
           TOPIC_ARN: !Ref MainTopic
