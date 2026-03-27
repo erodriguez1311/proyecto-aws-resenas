@@ -46,7 +46,7 @@ Resources:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref AdminAlertTopic
-      Endpoint: "TU-EMAIL@REAL.COM" # <--- CAMBIA ESTO
+      Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
   # 4. API GATEWAY
