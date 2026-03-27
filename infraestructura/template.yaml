@@ -65,7 +65,7 @@ Resources:
         AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
         AllowOrigin: '''*'''
 
-  # 5. LAMBDA PRODUCTORA
+ # 5. LAMBDA 1: RECIBE DE WEB Y MANDA A SNS
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -75,38 +75,35 @@ Resources:
         import json, boto3, os
         sns = boto3.client('sns')
         def lambda_handler(event, context):
+            print(f"WEB RECIBIDA: {event['body']}") # LOG PARA VER QUE LLEGA DE LA WEB
             try:
                 body = json.loads(event['body'])
-                sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
+                # Publicamos al SNS
+                response = sns.publish(
+                    TopicArn=os.environ['TOPIC_ARN'], 
+                    Message=json.dumps(body)
+                )
+                print(f"SNS RESPONSE: {response}") # LOG PARA VER SI SNS ACEPTA EL MENSAJE
                 return {
                     'statusCode': 200,
-                    'headers': {
-                        'Access-Control-Allow-Origin': '*',
-                        'Access-Control-Allow-Headers': 'Content-Type',
-                        'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                        'Content-Type': 'application/json'
-                    },
-                    'body': json.dumps({'msg': 'Recibido'})
+                    'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
+                    'body': json.dumps({'msg': 'Enviado a SNS'})
                 }
             except Exception as e:
-                return {
-                    'statusCode': 500,
-                    'headers': {'Access-Control-Allow-Origin': '*'},
-                    'body': json.dumps({'error': str(e)})
-                }
+                print(f"ERROR EN PRODUCTORA: {str(e)}")
+                return {'statusCode': 500, 'body': str(e)}
       Environment:
         Variables:
-          TOPIC_ARN: !Ref MainTopic
+          TOPIC_ARN: { Ref: MainTopic }
       Policies:
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt MainTopic.TopicName
+        - SNSFullAccess
       Events:
         PostReview:
           Type: Api
           Properties:
             Path: /send
             Method: post
-            RestApiId: !Ref MyApi
+            RestApiId: { Ref: MyApi }
 
 # 6. LAMBDA PROCESADORA (VERSION FINAL SIN ERRORES)
   ProcessorFunction:
