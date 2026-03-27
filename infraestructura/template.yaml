@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema de Feedback Final - CORREGIDO SIN ERRORES IAM
+Description: Sistema Final Desacoplado - VERSION ESTANDAR SAM
 
 Resources:
   # 1. BUCKET PARA LA WEB
@@ -46,7 +46,7 @@ Resources:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref AdminAlertTopic
-      Endpoint: "edu.rm1992@gmail.com"
+      Endpoint: "TU-EMAIL@REAL.COM" # <--- CAMBIA ESTO
       Protocol: email
 
   # 4. API GATEWAY
@@ -56,7 +56,7 @@ Resources:
       StageName: prod
       Cors:
         AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowHeaders: "'Content-Type'"
         AllowOrigin: "'*'"
 
   # 5. LAMBDA PRODUCTORA
@@ -83,10 +83,8 @@ Resources:
         Variables:
           TOPIC_ARN: !Ref MainTopic
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action: "sns:Publish"
-              Resource: !Ref MainTopic
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt MainTopic.TopicName
       Events:
         PostReview:
           Type: Api
@@ -95,7 +93,7 @@ Resources:
             Method: post
             RestApiId: !Ref MyApi
 
-  # 6. LAMBDA PROCESADORA (CON TIMEOUT Y REGION FORZADA)
+  # 6. LAMBDA PROCESADORA
   FinalProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -106,41 +104,31 @@ Resources:
       InlineCode: |
         import json, boto3, os
         def lambda_handler(event, context):
-            # Forzamos Irlanda porque Estocolmo no tiene Comprehend
             ia = boto3.client('comprehend', region_name='eu-west-1')
             sns = boto3.client('sns', region_name='eu-north-1')
-            
             for record in event.get('Records', []):
                 try:
                     sqs_body = json.loads(record['body'])
                     msg_content = json.loads(sqs_body['Message'])
                     text = msg_content.get('text', 'Sin texto')
-                    
                     res = ia.detect_sentiment(Text=text, LanguageCode='es')
-                    sentiment = res['Sentiment']
-                    
-                    if sentiment == 'NEGATIVE' or 'horrible' in text.lower():
+                    if res['Sentiment'] == 'NEGATIVE' or 'horrible' in text.lower():
                         sns.publish(
                             TopicArn=os.environ['ALERTA_ARN'],
-                            Message=f"Alerta Critica: {text}",
+                            Message=f"Alerta: {text}",
                             Subject="Feedback Negativo"
                         )
-                except Exception as e:
-                    print(f"Error: {str(e)}")
+                except Exception as e: print(f"Error: {e}")
             return {'status': 'done'}
       Environment:
         Variables:
           ALERTA_ARN: !Ref AdminAlertTopic
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action: 
-                - "comprehend:DetectSentiment"
-                - "sns:Publish"
-                - "sqs:ReceiveMessage"
-                - "sqs:DeleteMessage"
-                - "sqs:GetQueueAttributes"
-              Resource: "*"
+        - ComprehendBasicAccessPolicy: {}
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AdminAlertTopic.TopicName
+        - SQSPollerPolicy:
+            QueueName: !GetAtt ProcessingQueue.QueueName
       Events:
         MySQSEvent:
           Type: SQS
@@ -148,7 +136,7 @@ Resources:
             Queue: !GetAtt ProcessingQueue.Arn
             BatchSize: 1
 
-  # PERMISO PARA QUE SNS ESCRIBA EN SQS
+  # PERMISO SQS
   SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
