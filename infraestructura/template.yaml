@@ -105,7 +105,7 @@ Resources:
             Method: post
             RestApiId: { Ref: MyApi }
 
-# 6. LAMBDA PROCESADORA (VERSION FINAL SIN ERRORES)
+# 6. LAMBDA PROCESADORA (IA + ALERTA) - VERSION CORREGIDA REGION
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -115,51 +115,51 @@ Resources:
       MemorySize: 256
       InlineCode: |
         import json, boto3, os
-        # Usamos Irlanda porque Estocolmo no tiene Comprehend
-        comprehend = boto3.client('comprehend', region_name='eu-west-1')
-        sns = boto3.client('sns')
-        
+
         def lambda_handler(event, context):
+            # CREAMOS LOS CLIENTES DENTRO DE LA FUNCION PARA ASEGURAR LA REGION
+            # Forzamos eu-west-1 porque en Estocolmo NO hay Comprehend
+            comprehend = boto3.client('comprehend', region_name='eu-west-1')
+            sns = boto3.client('sns', region_name='eu-north-1')
+            
             alerta_arn = os.environ['ALERTA_TOPIC_ARN']
             print(f"EVENTO RECIBIDO: {json.dumps(event)}")
             
             for record in event.get('Records', []):
                 try:
-                    # 1. Intentamos leer el texto del mensaje
-                    body = json.loads(record['body'])
+                    # Leemos el cuerpo del mensaje de SQS
+                    sqs_body = json.loads(record['body'])
                     
-                    # Si viene de SNS, el mensaje real está dentro de 'Message'
-                    if 'Message' in body:
-                        inner_msg = json.loads(body['Message'])
-                        text = inner_msg.get('text', str(inner_msg))
+                    # Si viene de SNS, el texto real está en el campo 'Message'
+                    if isinstance(sqs_body, dict) and 'Message' in sqs_body:
+                        inner_data = json.loads(sqs_body['Message'])
+                        text = inner_data.get('text', str(inner_data))
                     else:
-                        text = body.get('text', str(body))
+                        text = sqs_body.get('text', str(sqs_body))
                     
-                    print(f"TEXTO A ANALIZAR: {text}")
+                    print(f"ANALIZANDO EN IRLANDA: {text}")
                     
-                    # 2. Análisis de sentimiento
+                    # Llamada a la IA en Irlanda
                     res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
                     sentiment = res['Sentiment']
                     print(f"SENTIMIENTO: {sentiment}")
 
-                    # 3. SIEMPRE enviamos email si es NEGATIVE o si el texto contiene 'HORRIBLE'
-                    # Esto es para asegurar que te llegue la prueba
                     if sentiment == 'NEGATIVE' or 'horrible' in text.lower():
-                        print("ENVIANDO ALERTA AL SNS...")
+                        print("ENVIANDO ALERTA...")
                         sns.publish(
                             TopicArn=alerta_arn,
-                            Message=f"ALERTA RESEÑA CRÍTICA: {text}",
-                            Subject="Feedback Negativo Detectado"
+                            Message=f"ALERTA RESEÑA: {text}",
+                            Subject="Feedback Critico Detectado"
                         )
                 except Exception as e:
-                    print(f"ERROR PROCESANDO: {str(e)}")
+                    print(f"ERROR INTERNO: {str(e)}")
             return {'status': 'ok'}
       Environment:
         Variables:
           ALERTA_TOPIC_ARN: { Ref: AdminAlertTopic }
       Policies:
         - ComprehendBasicAccessPolicy: {}
-        - SNSFullAccess # <--- Permiso total para evitar fallos de envío
+        - SNSFullAccess
       Events:
         MySQSEvent:
           Type: SQS
