@@ -59,7 +59,7 @@ Resources:
         AllowHeaders: "'Content-Type'"
         AllowOrigin: "'*'"
 
-  # 5. LAMBDA PRODUCTORA (Manda a SNS)
+ # 5. LAMBDA PRODUCTORA
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -83,7 +83,7 @@ Resources:
         Variables:
           TOPIC_ARN: { Ref: MainTopic }
       Policies:
-        - SNSFullAccess
+        - Arn: "arn:aws:iam::aws:policy/AmazonSNSFullAccess" # <--- ARN COMPLETO PARA EVITAR ERROR
       Events:
         PostReview:
           Type: Api
@@ -92,7 +92,7 @@ Resources:
             Method: post
             RestApiId: { Ref: MyApi }
 
-  # 6. LAMBDA PROCESADORA (IA EN IRLANDA + EMAIL)
+  # 6. LAMBDA PROCESADORA
   FinalProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -103,30 +103,21 @@ Resources:
       InlineCode: |
         import json, boto3, os
         def lambda_handler(event, context):
-            # CLIENTE FORZADO A IRLANDA (eu-west-1)
             ia = boto3.client('comprehend', region_name='eu-west-1')
             sns = boto3.client('sns', region_name='eu-north-1')
-            
             for record in event.get('Records', []):
                 try:
                     sqs_body = json.loads(record['body'])
                     msg_content = json.loads(sqs_body['Message'])
                     text = msg_content.get('text', 'Sin texto')
-                    
-                    print(f"PROCESANDO: {text}")
-                    
-                    # Análisis en Irlanda
                     res = ia.detect_sentiment(Text=text, LanguageCode='es')
                     sentiment = res['Sentiment']
-                    print(f"IA DICE: {sentiment}")
-
                     if sentiment == 'NEGATIVE' or 'horrible' in text.lower():
                         sns.publish(
                             TopicArn=os.environ['ALERTA_ARN'],
                             Message=f"Reseña Crítica: {text}",
                             Subject="Alerta de Feedback"
                         )
-                        print("EMAIL ENVIADO")
                 except Exception as e:
                     print(f"ERROR: {str(e)}")
             return {'status': 'done'}
@@ -134,8 +125,8 @@ Resources:
         Variables:
           ALERTA_ARN: { Ref: AdminAlertTopic }
       Policies:
-        - ComprehendBasicAccessPolicy: {}
-        - SNSFullAccess
+        - Arn: "arn:aws:iam::aws:policy/ComprehendReadOnly" # <--- ARN COMPLETO
+        - Arn: "arn:aws:iam::aws:policy/AmazonSNSFullAccess" # <--- ARN COMPLETO
       Events:
         MySQSEvent:
           Type: SQS
