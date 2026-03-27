@@ -49,29 +49,17 @@ Resources:
       Endpoint: "edu.rm1992@gmail.com"
       Protocol: email
 
-  # 4. API GATEWAY CON CORS FORZADO AL EXTREMO
+ # 4. API CON CORS REFORZADO
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      GatewayResponses:
-        DEFAULT_4XX:
-          ResponseParameters:
-            Headers:
-              Access-Control-Allow-Origin: "'*'"
-              Access-Control-Allow-Methods: "'POST,OPTIONS'"
-              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
-        DEFAULT_5XX:
-          ResponseParameters:
-            Headers:
-              Access-Control-Allow-Origin: "'*'"
       Cors:
         AllowMethods: "'POST,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
         AllowOrigin: "'*'"
-        MaxAge: "'600'"
 
- # 5. LAMBDA PRODUCTORA (CON PERMISOS Y CORS SEGURO)
+  # 5. LAMBDA PRODUCTORA CON HEADERS RECUPERADOS
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -84,8 +72,6 @@ Resources:
             try:
                 body = json.loads(event['body'])
                 sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
-                
-                # HEADERS PARA QUE EL NAVEGADOR NO DE ERROR CORS
                 return {
                     'statusCode': 200,
                     'headers': {
@@ -98,9 +84,7 @@ Resources:
             except Exception as e:
                 return {
                     'statusCode': 500,
-                    'headers': {
-                        'Access-Control-Allow-Origin': '*'
-                    },
+                    'headers': {'Access-Control-Allow-Origin': '*'},
                     'body': str(e)
                 }
       Environment:
@@ -116,7 +100,6 @@ Resources:
             Path: /send
             Method: post
             RestApiId: !Ref MyApi
-
   # 6. LAMBDA PROCESADORA
   FinalProcessorFunction:
     Type: AWS::Serverless::Function
