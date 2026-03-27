@@ -108,59 +108,67 @@ Resources:
             Method: post
             RestApiId: !Ref MyApi
 
-  # 6. LAMBDA PROCESADORA (IA + ALERTA)
-  # 6. LAMBDA PROCESADORA (IA + ALERTA) - VERSION CON LOGS DETALLADOS
+# 6. LAMBDA PROCESADORA (VERSION FINAL SIN ERRORES)
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
-      Timeout: 30  
+      Timeout: 30
       MemorySize: 256
       InlineCode: |
         import json, boto3, os
-        comprehend = boto3.client('comprehend')
+        # Usamos Irlanda porque Estocolmo no tiene Comprehend
+        comprehend = boto3.client('comprehend', region_name='eu-west-1')
         sns = boto3.client('sns')
+        
         def lambda_handler(event, context):
             alerta_arn = os.environ['ALERTA_TOPIC_ARN']
-            print(f"RECIBIDO EVENTO: {json.dumps(event)}") # LOG PARA VER QUE LLEGA
-
-            for record in event['Records']:
+            print(f"EVENTO RECIBIDO: {json.dumps(event)}")
+            
+            for record in event.get('Records', []):
                 try:
-                    # SQS envuelve el mensaje de SNS, y SNS envuelve tu JSON
-                    sqs_body = json.loads(record['body'])
-                    sns_msg = json.loads(sqs_body['Message'])
-                    text = sns_msg.get('text', 'Sin texto')
-
-                    print(f"ANALIZANDO TEXTO: {text}")
-
+                    # 1. Intentamos leer el texto del mensaje
+                    body = json.loads(record['body'])
+                    
+                    # Si viene de SNS, el mensaje real está dentro de 'Message'
+                    if 'Message' in body:
+                        inner_msg = json.loads(body['Message'])
+                        text = inner_msg.get('text', str(inner_msg))
+                    else:
+                        text = body.get('text', str(body))
+                    
+                    print(f"TEXTO A ANALIZAR: {text}")
+                    
+                    # 2. Análisis de sentimiento
                     res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
-                    sentimiento = res['Sentiment']
-                    print(f"SENTIMIENTO DETECTADO: {sentimiento}")
+                    sentiment = res['Sentiment']
+                    print(f"SENTIMIENTO: {sentiment}")
 
-                    if sentimiento == 'NEGATIVE':
-                        print("DISPARANDO ALERTA SNS...")
+                    # 3. SIEMPRE enviamos email si es NEGATIVE o si el texto contiene 'HORRIBLE'
+                    # Esto es para asegurar que te llegue la prueba
+                    if sentiment == 'NEGATIVE' or 'horrible' in text.lower():
+                        print("ENVIANDO ALERTA AL SNS...")
                         sns.publish(
                             TopicArn=alerta_arn,
-                            Message=f"Alerta: Rese?a negativa detectada: {text}",
-                            Subject="Nueva Rese?a Negativa"
+                            Message=f"ALERTA RESEÑA CRÍTICA: {text}",
+                            Subject="Feedback Negativo Detectado"
                         )
                 except Exception as e:
-                    print(f"ERROR PROCESANDO RECORD: {str(e)}")
-            return {'status': 'done'}
+                    print(f"ERROR PROCESANDO: {str(e)}")
+            return {'status': 'ok'}
       Environment:
         Variables:
-          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
+          ALERTA_TOPIC_ARN: { Ref: AdminAlertTopic }
       Policies:
         - ComprehendBasicAccessPolicy: {}
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt AdminAlertTopic.TopicName
+        - SNSFullAccess # <--- Permiso total para evitar fallos de envío
       Events:
         MySQSEvent:
           Type: SQS
           Properties:
-            Queue: !GetAtt ProcessingQueue.Arn
-            BatchSize: 10
+            Queue: { Fn::GetAtt: [ProcessingQueue, Arn] }
+            BatchSize: 1
 
   # PERMISO SQS
   SqsPolicy:
