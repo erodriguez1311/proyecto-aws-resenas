@@ -1,68 +1,71 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sistema Final Desacoplado - VERSION SEGURA
+Description: Sistema de rese?as - VERSION FINAL SIN ERRORES SINTAXIS
 
 Resources:
   # 1. BUCKET PARA LA WEB
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      WebsiteConfiguration:
-        IndexDocument: index.html
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
         IgnorePublicAcls: false
         RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
 
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: { Ref: FrontendBucket }
+      Bucket: !Ref FrontendBucket
       PolicyDocument:
         Statement:
-          - Effect: Allow
-            Principal: "*"
-            Action: "s3:GetObject"
-            Resource: { Fn::Sub: "arn:aws:s3:::${FrontendBucket}/*" }
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${FrontendBucket}/*
 
-  # 2. CAPA DE MENSAJERÍA (EL "PUENTE")
+  # 2. CAPA DE MENSAJER?A
   MainTopic:
     Type: AWS::SNS::Topic
 
   ProcessingQueue:
     Type: AWS::SQS::Queue
 
-  # SUSCRIPCIÓN DE LA COLA AL TEMA
-  QueueToTopicSubscription:
+  QueueSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: { Ref: MainTopic }
-      Endpoint: { Fn::GetAtt: [ProcessingQueue, Arn] }
+      TopicArn: !Ref MainTopic
+      Endpoint: !GetAtt ProcessingQueue.Arn
       Protocol: sqs
 
-  # 3. ALERTAS POR EMAIL
+  # 3. CAPA DE ALERTAS (EMAIL)
   AdminAlertTopic:
     Type: AWS::SNS::Topic
 
-  EmailSub:
+  AdminEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: { Ref: AdminAlertTopic }
-      Endpoint: "edu.rm1992@gmail.com"
+      TopicArn: !Ref AdminAlertTopic
+      Endpoint: edu.rm1992@gmail.com # <--- CAMBIA ESTO POR TU EMAIL
       Protocol: email
 
-  # 4. API GATEWAY CON CORS
+  # 4. API GATEWAY
   MyApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
       Cors:
-        AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
-        AllowOrigin: "'*'"
+        AllowMethods: '''POST,OPTIONS'''
+        AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
+        AllowOrigin: '''*'''
 
-  # 5. LAMBDA 1: RECIBE DE WEB Y MANDA A SNS
+  # 5. LAMBDA PRODUCTORA
   ProducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -77,88 +80,104 @@ Resources:
                 sns.publish(TopicArn=os.environ['TOPIC_ARN'], Message=json.dumps(body))
                 return {
                     'statusCode': 200,
-                    'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
-                    'body': json.dumps({'msg': 'OK'})
+                    'headers': {
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Headers': 'Content-Type',
+                        'Access-Control-Allow-Methods': 'POST,OPTIONS',
+                        'Content-Type': 'application/json'
+                    },
+                    'body': json.dumps({'msg': 'Recibido'})
                 }
             except Exception as e:
-                return {'statusCode': 500, 'body': str(e)}
+                return {
+                    'statusCode': 500,
+                    'headers': {'Access-Control-Allow-Origin': '*'},
+                    'body': json.dumps({'error': str(e)})
+                }
       Environment:
         Variables:
-          TOPIC_ARN: { Ref: MainTopic }
+          TOPIC_ARN: !Ref MainTopic
       Policies:
-        - SNSFullAccess # Permiso total para enviar mensajes
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt MainTopic.TopicName
       Events:
         PostReview:
           Type: Api
           Properties:
             Path: /send
             Method: post
-            RestApiId: { Ref: MyApi }
+            RestApiId: !Ref MyApi
 
-# 6. LAMBDA PROCESADORA (IA + ALERTA) - CORRECCIÓN DE REGIÓN
+  # 6. LAMBDA PROCESADORA (IA + ALERTA)
+  # 6. LAMBDA PROCESADORA (IA + ALERTA) - VERSION CON LOGS DETALLADOS
   ProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.9
+      Timeout: 30  
+      MemorySize: 256
       InlineCode: |
         import json, boto3, os
-        # FORZAMOS A COMPREHEND A USAR IRLANDA (eu-west-1) PORQUE EN ESTOCOLMO NO EXISTE
-        comprehend = boto3.client('comprehend', region_name='eu-west-1')
+        comprehend = boto3.client('comprehend')
         sns = boto3.client('sns')
         def lambda_handler(event, context):
             alerta_arn = os.environ['ALERTA_TOPIC_ARN']
+            print(f"RECIBIDO EVENTO: {json.dumps(event)}") # LOG PARA VER QUE LLEGA
+
             for record in event['Records']:
                 try:
+                    # SQS envuelve el mensaje de SNS, y SNS envuelve tu JSON
                     sqs_body = json.loads(record['body'])
                     sns_msg = json.loads(sqs_body['Message'])
                     text = sns_msg.get('text', 'Sin texto')
-                    
-                    # Analizamos sentimiento
+
+                    print(f"ANALIZANDO TEXTO: {text}")
+
                     res = comprehend.detect_sentiment(Text=text, LanguageCode='es')
                     sentimiento = res['Sentiment']
-                    print(f"SENTIMIENTO: {sentimiento}")
+                    print(f"SENTIMIENTO DETECTADO: {sentimiento}")
 
                     if sentimiento == 'NEGATIVE':
+                        print("DISPARANDO ALERTA SNS...")
                         sns.publish(
                             TopicArn=alerta_arn,
-                            Message=f"Alerta: Reseña negativa detectada: {text}",
-                            Subject="Nueva Reseña Negativa"
+                            Message=f"Alerta: Rese?a negativa detectada: {text}",
+                            Subject="Nueva Rese?a Negativa"
                         )
                 except Exception as e:
-                    print(f"ERROR: {str(e)}")
+                    print(f"ERROR PROCESANDO RECORD: {str(e)}")
             return {'status': 'done'}
       Environment:
         Variables:
-          ALERTA_TOPIC_ARN: 
-            Ref: AdminAlertTopic
+          ALERTA_TOPIC_ARN: !Ref AdminAlertTopic
       Policies:
         - ComprehendBasicAccessPolicy: {}
         - SNSPublishMessagePolicy:
-            TopicName: 
-              Fn::GetAtt: [AdminAlertTopic, TopicName]
+            TopicName: !GetAtt AdminAlertTopic.TopicName
       Events:
         MySQSEvent:
           Type: SQS
           Properties:
-            Queue: 
-              Fn::GetAtt: [ProcessingQueue, Arn]
+            Queue: !GetAtt ProcessingQueue.Arn
             BatchSize: 10
 
-  # PERMISOS PARA QUE SNS PUEDA ESCRIBIR EN SQS
-  SqsQueuePolicy:
+  # PERMISO SQS
+  SqsPolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
-      Queues: [ { Ref: ProcessingQueue } ]
+      Queues:
+        - !Ref ProcessingQueue
       PolicyDocument:
+        Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal: "*"
-            Action: "sqs:SendMessage"
-            Resource: { Fn::GetAtt: [ProcessingQueue, Arn] }
+            Principal: '*'
+            Action: sqs:SendMessage
+            Resource: !GetAtt ProcessingQueue.Arn
 
 Outputs:
   ApiUrl:
-    Value: { Fn::Sub: "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send" }
+    Value: !Sub https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/send
   WebsiteURL:
-    Value: { Fn::GetAtt: [FrontendBucket, WebsiteURL] }
+    Value: !GetAtt FrontendBucket.WebsiteURL
